@@ -848,238 +848,265 @@ A: Yes! The system is designed for production use with proper fault tolerance, m
 
 A: Use standard PostgreSQL backup tools (pg_dump, pg_basebackup) or managed database backups. See the deployment guide for automated backup strategies.
 
+
+## Processing Phases - Detailed Breakdown
+
+### Phase 1: File Upload & Initial Processing
+
+#### Step 1: Create Database Record
+```sql
+INSERT INTO file_uploads (
+    id,
+    status,
+    uploaded_at,
+    email,
+    webhook_url
+) VALUES (
+    'job_id',
+    'queued',
+    NOW(),
+    'notify@example.com',
+    'https://...'
+);
+```
+✅ Record created
+
+#### Step 2: Start Temporal Workflow
+```python
+workflow_id = f"csv-processing-{job_id}"
+input_data = {
+    "job_id": job_id,
+    "filepath": filepath,
+    "filename": filename,
+    "email": email,
+    "webhook_url": webhook_url
+}
+# Submit to Temporal Server
+# Workflow queued in task queue
+```
+✅ Workflow started
+
+#### Step 3: Return Response to Client
+```json
+HTTP 200 OK
+{
+    "job_id": "123e4567...",
+    "status": "queued",
+    "message": "File uploaded successfully",
+    "filename": "users.csv",
+    "uploaded_at": "2025-10-29T10:30:00Z"
+}
+```
+
+> 💡 **Client can now poll** `/status/{job_id}` to check progress
+
 ---
 
-**Built with ❤️ by the CSV Processor Team**
+### Phase 2: Asynchronous Processing
 
-Last Updated: October 31, 2025 | Version: 1.0.0      │
-  │    status = "queued",                           │
-  │    uploaded_at = NOW(),                         │
-  │    email = "notify@example.com",                │
-  │    webhook_url = "https://..."                  │
-  │  )                                              │
-  └────────────────────┬────────────────────────────┘
-                       │ ✓ Record created
-                       ▼
-  ┌─────────────────────────────────────────────────┐
-  │  API: Start Temporal Workflow                   │
-  │  workflow_id = "csv-processing-{job_id}"        │
-  │  input = {                                      │
-  │    job_id, filepath, filename,                  │
-  │    email, webhook_url                           │
-  │  }                                              │
-  │  • Submit to Temporal Server                    │
-  │  • Workflow queued in task queue                │
-  └────────────────────┬────────────────────────────┘
-                       │ ✓ Workflow started
-                       ▼
-  ┌─────────────────────────────────────────────────┐
-  │  API: Return Response to Client                 │
-  │  HTTP 200 OK                                    │
-  │  {                                              │
-  │    "job_id": "123e4567...",                     │
-  │    "status": "queued",                          │
-  │    "message": "File uploaded successfully",     │
-  │    "filename": "users.csv",                     │
-  │    "uploaded_at": "2025-10-29T10:30:00Z"        │
-  │  }                                              │
-  └─────────────────────────────────────────────────┘
-                       │
-                       │ Client receives job_id
-                       │ Can poll /status/{job_id}
-                       ▼
+**Temporal Worker Pool** picks up workflow from task queue
+
+#### Activity 1: Update Status to "Processing"
+
+```sql
+UPDATE file_uploads
+SET 
+    status = 'processing',
+    started_at = NOW()
+WHERE id = job_id;
+```
+✅ Status updated
+
+#### Activity 2: Validate & Process CSV
+
+**Initialize Processing:**
+```python
+# Open CSV file
+file_path = f'/tmp/uploads/{job_id}.csv'
+
+# Initialize counters
+total_rows = 0
+valid_rows = 0
+invalid_rows = 0
+errors = []
+```
+
+**Process Each Chunk (1000 rows):**
+
+1. **Read next 1000 rows from CSV**
+
+2. **For each row in chunk:**
+   - `total_rows++`
+   
+   **Validate name:**
+   - Not empty
+   - Length ≤ 255 chars
+   
+   **Validate email:**
+   - RFC 5322 format
+   - Not duplicate in this file
+   
+   **Validate phone:**
+   - Exactly 10 digits
+   - Only numeric characters
+   
+   **Validate age:**
+   - Integer value
+   - Between 1 and 150
+
+3. **If all validations pass:**
+   ```sql
+   INSERT INTO users (
+       name, email, phone, age,
+       upload_id, created_at
+   ) VALUES (...)
+   ON CONFLICT (email) DO NOTHING;
+   ```
+   - ✅ Success → `valid_rows++`
+   - ⚠️ Duplicate → `invalid_rows++`, append error message
+
+4. **If validation failed:**
+   - `invalid_rows++`
+   - `errors.append("Row X: error msg")`
+
+5. **After chunk processing:**
+   - `COMMIT` database transaction
+   - Send heartbeat to Temporal: `"X rows processed"`
+   - Continue to next chunk
+
+**Return Processing Result:**
+```python
+{
+    "total_rows": total_rows,
+    "valid_rows": valid_rows,
+    "invalid_rows": invalid_rows,
+    "errors": errors
+}
+```
+✅ Processing complete
+
+#### Activity 3: Update Final Status
+
+```python
+processing_time = completed_at - started_at
+```
+
+```sql
+UPDATE file_uploads
+SET 
+    status = 'completed',
+    completed_at = NOW(),
+    total_rows = X,
+    valid_rows = Y,
+    invalid_rows = Z,
+    errors = ARRAY[error_list]
+WHERE id = job_id;
+```
+✅ Status updated
+
+#### Activity 4: Record Metrics
+
+**Database Metrics:**
+```sql
+INSERT INTO processing_metrics (
+    job_id, metric_name, metric_value
+) VALUES
+    (job_id, 'processing_time', 130.5),
+    (job_id, 'throughput_rows_per_sec', 76.3);
+```
+
+**Prometheus Metrics:**
+```python
+# Update counters
+csv_processing_total.labels(status="completed").inc()
+csv_processing_duration_seconds.observe(130.5)
+csv_rows_valid_total.inc(valid_rows)
+```
+✅ Metrics recorded
+
+---
+
+### Phase 3: Notifications
+
+#### Activity 5: Send Notifications
+
+**If email provided:**
+
+1. Generate HTML email template
+   - Subject: "CSV Processing Completed"
+   - Body: Job results, stats, errors
+
+2. Connect to SMTP server
+   - Server: `smtp.gmail.com:587`
+   - Security: TLS
+
+3. Send email
+   - From: `noreply@fileprocessing.com`
+   - To: `notify@example.com`
+
+**If webhook_url provided:**
+
+1. Prepare JSON payload:
+   ```json
+   {
+       "job_id": "123e4567...",
+       "status": "completed",
+       "filename": "users.csv",
+       "total_rows": 10000,
+       "valid_rows": 9850,
+       "invalid_rows": 150,
+       "processing_time_seconds": 130.5,
+       "errors": [...]
+   }
+   ```
+
+2. HTTP POST to webhook_url
+   ```http
+   POST https://webhook_url
+   Content-Type: application/json
+   X-Job-ID: {job_id}
+   
+   [JSON payload]
+   ```
+
+3. Timeout: 30 seconds
+4. Retry on failure: 3 attempts
+
+✅ Notifications sent
+
+#### Activity 6: Cleanup Files
+
+```bash
+# Delete temporary file
+rm /tmp/uploads/{job_id}.csv
+
+# Actions performed:
+# • Free disk space
+# • Remove temporary data
+# • Log cleanup action
+```
+✅ Cleanup complete
+
+---
+
+## Workflow Complete! 🎉
+
+**Final State:**
+- ✅ Job status: "completed"
+- ✅ All valid data persisted in database
+- ✅ User notified via email/webhook
+- ✅ Temporary files cleaned up
+- ✅ Metrics recorded
+
+**Total workflow execution time:** ~2 minutes (for 10,000 row file)
+
+---
+
+*Built with ❤️ by the CSV Processor Team*  
+*Last Updated: October 31, 2025 | Version: 1.0.0*
 
 
-PHASE 2: ASYNCHRONOUS PROCESSING
-═══════════════════════════════════════════════════════════════════════════
 
-  Temporal Worker Pool (Polling)
-      │
-      │ Picks up workflow from task queue
-      │
-      ▼
-  ┌─────────────────────────────────────────────────┐
-  │  ACTIVITY 1: Update Status to "processing"      │
-  │  ───────────────────────────────────────────────│
-  │  UPDATE file_uploads                            │
-  │  SET status = 'processing',                     │
-  │      started_at = NOW()                         │
-  │  WHERE id = job_id                              │
-  └────────────────────┬────────────────────────────┘
-                       │ ✓ Status updated
-                       │
-                       ▼
-  ┌─────────────────────────────────────────────────┐
-  │  ACTIVITY 2: Validate & Process CSV             │
-  │  ───────────────────────────────────────────────│
-  │                                                 │
-  │  Open CSV file: /tmp/uploads/{job_id}.csv       │
-  │                                                 │
-  │  Initialize counters:                           │
-  │  • total_rows = 0                               │
-  │  • valid_rows = 0                               │
-  │  • invalid_rows = 0                             │
-  │  • errors = []                                  │
-  │                                                 │
-  │  ┌─────────────────────────────────────────┐   │
-  │  │  FOR EACH CHUNK (1000 rows):            │   │
-  │  │  ─────────────────────────────────────  │   │
-  │  │                                         │   │
-  │  │  Read next 1000 rows from CSV           │   │
-  │  │       │                                 │   │
-  │  │       ▼                                 │   │
-  │  │  FOR EACH ROW in chunk:                 │   │
-  │  │    total_rows++                         │   │
-  │  │       │                                 │   │
-  │  │       ├─► Validate name:                │   │
-  │  │       │   • Not empty                   │   │
-  │  │       │   • Length ≤ 255 chars          │   │
-  │  │       │                                 │   │
-  │  │       ├─► Validate email:               │   │
-  │  │       │   • RFC 5322 format             │   │
-  │  │       │   • Not duplicate in this file  │   │
-  │  │       │                                 │   │
-  │  │       ├─► Validate phone:               │   │
-  │  │       │   • Exactly 10 digits           │   │
-  │  │       │   • Only numeric characters     │   │
-  │  │       │                                 │   │
-  │  │       └─► Validate age:                 │   │
-  │  │           • Integer value               │   │
-  │  │           • Between 1 and 150           │   │
-  │  │                                         │   │
-  │  │       ▼                                 │   │
-  │  │  IF all validations pass:               │   │
-  │  │    ┌─────────────────────────────────┐  │   │
-  │  │    │ INSERT INTO users (             │  │   │
-  │  │    │   name, email, phone, age,      │  │   │
-  │  │    │   upload_id, created_at         │  │   │
-  │  │    │ ) VALUES (...)                  │  │   │
-  │  │    │ ON CONFLICT (email) DO NOTHING  │  │   │
-  │  │    └──────────┬──────────────────────┘  │   │
-  │  │               │                         │   │
-  │  │               ├─► Success: valid_rows++ │   │
-  │  │               └─► Duplicate: invalid++  │   │
-  │  │                   errors.append(msg)    │   │
-  │  │                                         │   │
-  │  │  ELSE (validation failed):              │   │
-  │  │    invalid_rows++                       │   │
-  │  │    errors.append("Row X: error msg")    │   │
-  │  │                                         │   │
-  │  │  END FOR (each row)                     │   │
-  │  │       │                                 │   │
-  │  │       ▼                                 │   │
-  │  │  COMMIT database transaction            │   │
-  │  │  Send heartbeat to Temporal             │   │
-  │  │  (reports progress: "X rows processed") │   │
-  │  │                                         │   │
-  │  └─────────────┬───────────────────────────┘   │
-  │                │                               │
-  │                │ Continue to next chunk        │
-  │                ▼                               │
-  │  END WHILE (chunks remain)                    │
-  │                                                 │
-  │  Return result: {                               │
-  │    total_rows, valid_rows,                     │
-  │    invalid_rows, errors                        │
-  │  }                                              │
-  └────────────────────┬────────────────────────────┘
-                       │ ✓ Processing complete
-                       │
-                       ▼
-  ┌─────────────────────────────────────────────────┐
-  │  ACTIVITY 3: Update Final Status                │
-  │  ───────────────────────────────────────────────│
-  │  processing_time = completed_at - started_at    │
-  │                                                 │
-  │  UPDATE file_uploads                            │
-  │  SET status = 'completed',                      │
-  │      completed_at = NOW(),                      │
-  │      total_rows = X,                            │
-  │      valid_rows = Y,                            │
-  │      invalid_rows = Z,                          │
-  │      errors = [error_list]                      │
-  │  WHERE id = job_id                              │
-  └────────────────────┬────────────────────────────┘
-                       │ ✓ Status updated
-                       │
-                       ▼
-  ┌─────────────────────────────────────────────────┐
-  │  ACTIVITY 4: Record Metrics                     │
-  │  ───────────────────────────────────────────────│
-  │  INSERT INTO processing_metrics (               │
-  │    job_id, metric_name, metric_value            │
-  │  ) VALUES                                       │
-  │    (job_id, 'processing_time', 130.5),          │
-  │    (job_id, 'throughput_rows_per_sec', 76.3)   │
-  │                                                 │
-  │  Update Prometheus metrics:                     │
-  │  • csv_processing_total{status="completed"}++   │
-  │  • csv_processing_duration_seconds.observe()    │
-  │  • csv_rows_valid_total += valid_rows           │
-  └────────────────────┬────────────────────────────┘
-                       │ ✓ Metrics recorded
-                       │
-                       ▼
-
-
-PHASE 3: NOTIFICATIONS
-═══════════════════════════════════════════════════════════════════════════
-
-  ┌─────────────────────────────────────────────────┐
-  │  ACTIVITY 5: Send Notifications                 │
-  │  ───────────────────────────────────────────────│
-  │                                                 │
-  │  IF email provided:                             │
-  │  ┌───────────────────────────────────────────┐  │
-  │  │  Generate HTML email template            │  │
-  │  │  Subject: "CSV Processing Completed"      │  │
-  │  │  Body: Job results, stats, errors         │  │
-  │  │                                           │  │
-  │  │  Connect to SMTP server                   │  │
-  │  │  (smtp.gmail.com:587)                     │  │
-  │  │                                           │  │
-  │  │  Send email with TLS                      │  │
-  │  │  To: notify@example.com                   │  │
-  │  │  From: noreply@fileprocessing.com         │  │
-  │  └───────────────────────────────────────────┘  │
-  │                                                 │
-  │  IF webhook_url provided:                       │
-  │  ┌───────────────────────────────────────────┐  │
-  │  │  Prepare JSON payload:                    │  │
-  │  │  {                                        │  │
-  │  │    "job_id": "123e4567...",               │  │
-  │  │    "status": "completed",                 │  │
-  │  │    "filename": "users.csv",               │  │
-  │  │    "total_rows": 10000,                   │  │
-  │  │    "valid_rows": 9850,                    │  │
-  │  │    "invalid_rows": 150,                   │  │
-  │  │    "processing_time_seconds": 130.5,      │  │
-  │  │    "errors": [...]                        │  │
-  │  │  }                                        │  │
-  │  │                                           │  │
-  │  │  HTTP POST to webhook_url                 │  │
-  │  │  Headers:                                 │  │
-  │  │    Content-Type: application/json         │  │
-  │  │    X-Job-ID: {job_id}                     │  │
-  │  │                                           │  │
-  │  │  Timeout: 30 seconds                      │  │
-  │  │  Retry on failure: 3 attempts             │  │
-  │  └───────────────────────────────────────────┘  │
-  └────────────────────┬────────────────────────────┘
-                       │ ✓ Notifications sent
-                       │
-                       ▼
-  ┌─────────────────────────────────────────────────┐
-  │  ACTIVITY 6: Cleanup Files                      │
-  │  ───────────────────────────────────────────────│
-  │  Delete file: /tmp/uploads/{job_id}.csv         │
-  │  • Free disk space                              │
-  │  • Remove temporary data                        │
-  │  • Log cleanup action                           │
-  └────────────────────┬────────────────────────────┘
-                       │ ✓ Cleanup complete
-                       │
-                       ▼
   # CSV File Processing & Notification Service
 
 A production-grade, scalable backend service for processing CSV files asynchronously with fault tolerance, built using FastAPI, Temporal, and PostgreSQL. This service allows users to upload CSV files containing user data, validates them, stores valid records in the database, and notifies users when processing is complete.
@@ -1457,7 +1484,7 @@ Get the service running in 5 minutes:
 
 ```bash
 # 1. Clone repository
-git clone https://github.com/your-org/csv-file-processing.git
+git clone https://github.com/ar29/csv-file-processing.git
 cd csv-file-processing
 
 # 2. Run automated setup
@@ -1497,7 +1524,7 @@ For detailed setup instructions, see [SETUP_GUIDE.md](SETUP_GUIDE.md)
 
 ```bash
 # Clone and setup
-git clone https://github.com/your-org/csv-file-processing.git
+git clone https://github.com/ar29/csv-file-processing.git
 cd csv-file-processing
 ./setup.sh
 ```
@@ -1515,7 +1542,7 @@ The setup script automatically:
 
 ```bash
 # 1. Clone repository
-git clone https://github.com/your-org/csv-file-processing.git
+git clone https://github.com/ar29/csv-file-processing.git
 cd csv-file-processing
 
 # 2. Create environment file
@@ -3110,7 +3137,7 @@ We welcome contributions! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for deta
 
 ```bash
 # Clone your fork
-git clone https://github.com/YOUR_USERNAME/csv-file-processing.git
+git clone https://github.com/ar29/csv-file-processing.git
 cd csv-file-processing
 
 # Create virtual environment
@@ -3325,7 +3352,7 @@ Thank you for choosing CSV File Processing Service! This production-ready soluti
 
 **Getting Started:**
 ```bash
-git clone https://github.com/your-org/csv-file-processing.git
+git clone https://github.com/ar29/csv-file-processing.git
 cd csv-file-processing
 ./setup.sh
 ```
@@ -3338,8 +3365,8 @@ cd csv-file-processing
 
 **Questions or Issues?**
 - 📖 Check the [documentation](docs/)
-- 💬 Join [GitHub Discussions](https://github.com/your-org/csv-file-processing/discussions)
-- 🐛 Report [issues](https://github.com/your-org/csv-file-processing/issues)
+- 💬 Join [GitHub Discussions](https://github.com/ar29/csv-file-processing/discussions)
+- 🐛 Report [issues](https://github.com/ar29/csv-file-processing/issues)
 - 📧 Contact support@example.com
 
 **Star us on GitHub** if you find this project useful! ⭐
