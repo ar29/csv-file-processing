@@ -1,0 +1,99 @@
+# Temporal dynamic configuration for development environment
+# This file contains runtime configuration that can be changed without restarting the server
+
+# Workflow execution limits
+limit.maxIDLength:
+  - value: 255
+    constraints: {}
+
+# History limits  
+limit.historySize:
+  - value: 50000
+    constraints: {}
+
+limit.historyCount:
+  - value: 50000
+    constraints: {}
+
+# Blob size limits
+limit.blobSize.error:
+  - value: 2097152  # 2MB
+    constraints: {}
+
+limit.blobSize.warn:
+  - value: 262144   # 256KB
+    constraints: {}
+
+# Task queue limits
+matching.numTaskqueueWritePartitions:
+  - value: 3
+    constraints: {}
+
+matching.numTaskqueueReadPartitions:
+  - value: 3
+    constraints: {}
+
+# Persistence settings
+system.forceSearchAttributesCacheRefreshOnRead:
+  - value: false
+    constraints: {}
+
+# Archival settings
+system.enableArchival:
+  - value: false
+    constraints: {}
+
+# Visibility settings
+system.advancedVisibilityWritingMode:
+  - value: "off"
+    constraints: {}
+
+# Worker settings
+worker.replicatorConcurrency:
+  - value: 1000
+    constraints: {}
+
+# Frontend settings
+frontend.enableClientVersionCheck:
+  - value: true
+    constraints: {}
+
+frontend.disallowQuery:
+  - value: false
+    constraints: {}
+
+# History settings
+history.defaultActivityRetryPolicy:
+  - value:
+      InitialInterval: 1s
+      BackoffCoefficient: 2.0
+      MaximumInterval: 100s
+      MaximumAttempts: 0
+    constraints: {}
+
+history.defaultWorkflowRetryPolicy:
+  - value:
+      InitialInterval: 1s
+      BackoffCoefficient: 2.0
+      MaximumInterval: 100s
+      MaximumAttempts: 0
+    constraints: {}
+
+# Task processing settings
+history.persistenceMaxQPS:
+  - value: 9000
+    constraints: {}
+
+history.persistenceGlobalMaxQPS:
+  - value: 0
+    constraints: {}
+
+# Timer settings
+matching.longPollExpirationInterval:
+  - value: 60s
+    constraints: {}
+
+# Retention settings
+retention.defaultRetentionDays:
+  - value: 7
+    constraints: {}
