@@ -49,12 +49,11 @@ class Settings(BaseSettings):
     max_retries: int = 5
     min_age: int = 1
     max_age: int = 150
-    
-    class Config:
-        env_file = ".env"
-        case_sensitive = False
 
-    model_config = SettingsConfigDict(env_file=".env", case_sensitive=False)
+    model_config = SettingsConfigDict(env_file=".env", 
+                                      case_sensitive=False, 
+                                      env_file_encoding="utf-8",
+                                      extra="ignore")  # 👈 allows unknown env vars)
 
 
 @lru_cache()

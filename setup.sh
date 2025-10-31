@@ -46,15 +46,6 @@ mkdir -p alembic/versions
 echo "✓ Directories created"
 echo ""
 
-# Create Temporal dynamic config file
-echo "Creating Temporal configuration..."
-mkdir -p docker/temporal
-cat > docker/temporal/development-sql.yaml <<EOF
-# Temporal dynamic configuration for development
-EOF
-echo "✓ Temporal configuration created"
-echo ""
-
 # Build Docker images
 echo "Building Docker images..."
 docker-compose build
