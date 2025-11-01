@@ -3,10 +3,10 @@ Temporal workflow for CSV processing.
 Orchestrates the entire processing pipeline with fault tolerance.
 """
 from temporalio import workflow
+from temporalio.common import RetryPolicy
 from datetime import timedelta
 from dataclasses import dataclass
 from typing import Optional
-import time
 
 # Import activities
 with workflow.unsafe.imports_passed_through():
@@ -48,15 +48,15 @@ class CSVProcessingWorkflow:
             Dictionary with processing results
         """
         workflow.logger.info(f"Starting workflow for job {input.job_id}")
-        start_time = time.time()
+        start_time = workflow.now()
         
         try:
             # Step 1: Update status to processing
             await workflow.execute_activity(
                 update_job_status,
-                args=[input.job_id, "processing", {"started_at": workflow.now()}],
+                args=[input.job_id, "processing", {"started_at": str(workflow.now())}],
                 start_to_close_timeout=timedelta(seconds=30),
-                retry_policy=workflow.RetryPolicy(
+                retry_policy=RetryPolicy(
                     maximum_attempts=3,
                     initial_interval=timedelta(seconds=1),
                     maximum_interval=timedelta(seconds=10),
@@ -71,7 +71,7 @@ class CSVProcessingWorkflow:
                 args=[input.job_id, input.filepath],
                 start_to_close_timeout=timedelta(minutes=30),
                 heartbeat_timeout=timedelta(seconds=30),
-                retry_policy=workflow.RetryPolicy(
+                retry_policy=RetryPolicy(
                     maximum_attempts=5,
                     initial_interval=timedelta(seconds=5),
                     maximum_interval=timedelta(minutes=1),
@@ -79,7 +79,7 @@ class CSVProcessingWorkflow:
                 )
             )
             
-            processing_time = time.time() - start_time
+            processing_time = (workflow.now() - start_time).total_seconds()
             
             # Step 3: Update status to completed
             await workflow.execute_activity(
@@ -88,7 +88,7 @@ class CSVProcessingWorkflow:
                     input.job_id,
                     "completed",
                     {
-                        "completed_at": workflow.now(),
+                        "completed_at": str(workflow.now()),
                         "total_rows": result['total_rows'],
                         "valid_rows": result['valid_rows'],
                         "invalid_rows": result['invalid_rows'],
@@ -96,7 +96,7 @@ class CSVProcessingWorkflow:
                     }
                 ],
                 start_to_close_timeout=timedelta(seconds=30),
-                retry_policy=workflow.RetryPolicy(maximum_attempts=3)
+                retry_policy=RetryPolicy(maximum_attempts=3)
             )
             
             # Step 4: Record metrics
@@ -104,10 +104,10 @@ class CSVProcessingWorkflow:
                 record_metric,
                 args=[input.job_id, "processing_time", processing_time],
                 start_to_close_timeout=timedelta(seconds=10),
-                retry_policy=workflow.RetryPolicy(maximum_attempts=2)
+                retry_policy=RetryPolicy(maximum_attempts=2)
             )
             
-            # Step 5: Send notification (best effort, don't fail workflow)
+            # Step 5: Send notification (best effort)
             try:
                 await workflow.execute_activity(
                     send_notification,
@@ -124,7 +124,7 @@ class CSVProcessingWorkflow:
                         input.webhook_url
                     ],
                     start_to_close_timeout=timedelta(seconds=60),
-                    retry_policy=workflow.RetryPolicy(
+                    retry_policy=RetryPolicy(
                         maximum_attempts=3,
                         initial_interval=timedelta(seconds=2)
                     )
@@ -138,7 +138,7 @@ class CSVProcessingWorkflow:
                     cleanup_file,
                     args=[input.filepath],
                     start_to_close_timeout=timedelta(seconds=30),
-                    retry_policy=workflow.RetryPolicy(maximum_attempts=2)
+                    retry_policy=RetryPolicy(maximum_attempts=2)
                 )
             except Exception as e:
                 workflow.logger.warning(f"File cleanup failed: {e}")
@@ -150,12 +150,12 @@ class CSVProcessingWorkflow:
                 "total_rows": result['total_rows'],
                 "valid_rows": result['valid_rows'],
                 "invalid_rows": result['invalid_rows'],
-                "processing_time": processing_time
+                "processing_time_seconds": processing_time
             }
         
         except Exception as e:
             workflow.logger.error(f"Workflow failed for job {input.job_id}: {e}")
-            processing_time = time.time() - start_time
+            processing_time = (workflow.now() - start_time).total_seconds()
             
             # Update status to failed
             try:
@@ -165,12 +165,12 @@ class CSVProcessingWorkflow:
                         input.job_id,
                         "failed",
                         {
-                            "completed_at": workflow.now(),
+                            "completed_at": str(workflow.now()),
                             "errors": [str(e)]
                         }
                     ],
                     start_to_close_timeout=timedelta(seconds=30),
-                    retry_policy=workflow.RetryPolicy(maximum_attempts=2)
+                    retry_policy=RetryPolicy(maximum_attempts=2)
                 )
             except Exception as update_error:
                 workflow.logger.error(f"Failed to update status: {update_error}")
@@ -190,7 +190,7 @@ class CSVProcessingWorkflow:
                         input.webhook_url
                     ],
                     start_to_close_timeout=timedelta(seconds=60),
-                    retry_policy=workflow.RetryPolicy(maximum_attempts=2)
+                    retry_policy=RetryPolicy(maximum_attempts=2)
                 )
             except Exception as notif_error:
                 workflow.logger.warning(f"Failed notification: {notif_error}")
@@ -201,7 +201,7 @@ class CSVProcessingWorkflow:
                     cleanup_file,
                     args=[input.filepath],
                     start_to_close_timeout=timedelta(seconds=30),
-                    retry_policy=workflow.RetryPolicy(maximum_attempts=1)
+                    retry_policy=RetryPolicy(maximum_attempts=1)
                 )
             except:
                 pass
@@ -209,5 +209,5 @@ class CSVProcessingWorkflow:
             return {
                 "status": "failed",
                 "error": str(e),
-                "processing_time": processing_time
+                "processing_time_seconds": processing_time
             }

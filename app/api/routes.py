@@ -4,6 +4,7 @@ Defines all REST endpoints for the service.
 """
 from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException
 from sqlalchemy.orm import Session
+from sqlalchemy import text
 from temporalio.client import Client
 from typing import Optional
 from datetime import datetime
@@ -189,7 +190,7 @@ async def health_check(db: Session = Depends(get_db)):
     
     # Check database
     try:
-        db.execute("SELECT 1")
+        db.execute(text("SELECT 1"))
         health_status["database"] = "connected"
     except Exception as e:
         logger.error(f"Database health check failed: {e}")

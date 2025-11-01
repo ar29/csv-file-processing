@@ -60,7 +60,7 @@ echo ""
 
 # Wait for services to be ready
 echo "Waiting for services to be ready (this may take a minute)..."
-sleep 30
+# sleep 30
 
 # Check if database is ready
 echo "Checking database connection..."

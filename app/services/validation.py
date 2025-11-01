@@ -32,6 +32,9 @@ class CSVValidator:
         Returns:
             True if valid, False otherwise
         """
+        if not headers:
+            logger.error("CSV missing headers")
+            return False
         # Strip whitespace and convert to lowercase
         normalized_headers = [h.strip().lower() for h in headers]
         

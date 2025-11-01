@@ -132,6 +132,10 @@ async def global_exception_handler(request: Request, exc: Exception):
     )
 
 
+@app.options("/health")
+async def health_options():
+    return {"allow": "GET, OPTIONS"}
+
 # Include API routes
 app.include_router(router, tags=["CSV Processing"])
 

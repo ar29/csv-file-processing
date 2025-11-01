@@ -17,26 +17,16 @@ logger = get_logger(__name__)
 
 
 @activity.defn
-async def update_job_status(job_id: str, status: str, **kwargs) -> bool:
-    """
-    Updates job status in database.
-    
-    Args:
-        job_id: Job identifier
-        status: New status
-        **kwargs: Additional fields to update
-    
-    Returns:
-        True if successful
-    """
+async def update_job_status(job_id: str, status: str, extra_fields: dict = None) -> bool:
     try:
         with get_db_context() as db:
             job = db.query(FileUpload).filter(FileUpload.id == job_id).first()
             if job:
                 job.status = status
-                for key, value in kwargs.items():
-                    if hasattr(job, key):
-                        setattr(job, key, value)
+                if extra_fields:
+                    for key, value in extra_fields.items():
+                        if hasattr(job, key):
+                            setattr(job, key, value)
                 db.commit()
                 logger.info(f"Job {job_id} status updated to {status}")
                 return True
@@ -44,6 +34,7 @@ async def update_job_status(job_id: str, status: str, **kwargs) -> bool:
     except Exception as e:
         logger.error(f"Error updating job status: {e}")
         raise
+
 
 
 @activity.defn
@@ -105,7 +96,12 @@ async def validate_and_process_csv(job_id: str, filepath: str) -> Dict:
                         errors.append(item['error'])
             
             # Report progress (for Temporal heartbeat)
-            activity.heartbeat(f"Processed {total_rows} rows")
+            def safe_heartbeat(msg):
+                try:
+                    activity.heartbeat(msg)
+                except RuntimeError:
+                    pass  # not running inside Temporal context
+            safe_heartbeat(f"Processed {total_rows} rows")
         
         logger.info(f"CSV processing completed for job {job_id}: {valid_rows}/{total_rows} valid rows")
         
